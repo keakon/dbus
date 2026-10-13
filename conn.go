@@ -36,6 +36,7 @@ type Conn struct {
 
 	closeOnce sync.Once
 	closeErr  error
+	readDone  chan struct{}
 
 	busObj BusObject
 	unixFD bool
@@ -282,6 +283,7 @@ func NewConnHandler(conn io.ReadWriteCloser, handler Handler, signalHandler Sign
 // newConn creates a new *Conn from a transport.
 func newConn(tr transport, opts ...ConnOption) (*Conn, error) {
 	conn := new(Conn)
+	conn.readDone = make(chan struct{})
 	conn.transport = tr
 	for _, opt := range opts {
 		if err := opt(conn); err != nil {
@@ -393,6 +395,7 @@ func (conn *Conn) Hello() error {
 // inWorker runs in an own goroutine, reading incoming messages from the
 // transport and dispatching them appropriately.
 func (conn *Conn) inWorker() {
+	defer close(conn.readDone)
 	sequenceGen := newSequenceGenerator()
 	for {
 		msg, err := conn.ReadMessage()
@@ -1013,5 +1016,26 @@ func (tracker *callTracker) finalizeAllWithError(sequenceGen *sequenceGenerator,
 		call.Err = err
 		call.ResponseSequence = sequenceGen.next()
 		call.done()
+	}
+}
+
+// ReadDone is closed after the authenticated connection's receive worker exits.
+// Only wait on it after Auth has succeeded, and never from an interceptor or
+// signal handler running on that worker. Close itself cannot join the worker
+// because the worker also calls Close on read failure.
+func (conn *Conn) ReadDone() <-chan struct{} { return conn.readDone }
+
+// WithIncomingUnixFDs transfers ownership of every descriptor received from the
+// socket to handler before message decoding, including malformed, unreferenced,
+// and late descriptors. The handler must release all descriptors and must not
+// wait for the receive worker. Install it before Auth; it is immutable thereafter.
+func WithIncomingUnixFDs(handler func([]int)) ConnOption {
+	return func(conn *Conn) error {
+		tr, ok := conn.transport.(interface{ setIncomingUnixFDs(func([]int)) })
+		if !ok {
+			return errors.New("dbus: incoming Unix FD handler requires a Unix transport")
+		}
+		tr.setIncomingUnixFDs(handler)
+		return nil
 	}
 }

@@ -1,3 +1,26 @@
+# Chord's godbus fork
+
+This fork adds explicit receive-time ownership of Unix file descriptors and a
+receive-worker completion signal. A caller can release descriptors even when a
+message is truncated, malformed, unreferenced, or arrives after cancellation,
+and wait for cleanup to finish after closing its private connection.
+
+Use `WithIncomingUnixFDs` before authentication. The handler owns every delivered
+descriptor; decoded message values are references, not additional owners. After
+successful `Auth`, close the connection and wait on `ReadDone()` before collecting
+final cleanup results. Do not wait on `ReadDone()` from the receiver's callbacks.
+
+The module path is `github.com/keakon/dbus/v5`. The protocol implementation and
+upstream license are retained; no Darwin-specific changes are included.
+
+Run the focused Linux regressions with:
+
+```sh
+go test -run 'TestIncomingUnixFDsBeforeDecode|TestReadDoneWaitsForFDHandler' .
+```
+
+---
+
 dbus
 ----
 

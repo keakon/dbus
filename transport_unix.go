@@ -23,9 +23,10 @@ type msghead struct {
 }
 
 type oobReader struct {
-	conn *net.UnixConn
-	oob  []byte
-	buf  [4096]byte
+	conn            *net.UnixConn
+	incomingUnixFDs func([]int)
+	oob             []byte
+	buf             [4096]byte
 
 	// The following fields are used to reduce memory allocs.
 	headers  []header
@@ -38,6 +39,21 @@ type oobReader struct {
 
 func (o *oobReader) Read(b []byte) (n int, err error) {
 	n, oobn, flags, _, err := o.conn.ReadMsgUnix(b, o.buf[:])
+	// The kernel installs descriptors before returning from recvmsg. Deliver
+	// them even when the payload is truncated or reading reports an error.
+	if o.incomingUnixFDs != nil && oobn > 0 {
+		messages, parseErr := syscall.ParseSocketControlMessage(o.buf[:oobn])
+		for i := range messages {
+			control := &messages[i]
+			if control.Header.Level != syscall.SOL_SOCKET || control.Header.Type != syscall.SCM_RIGHTS {
+				continue
+			}
+			fds, rightsErr := syscall.ParseUnixRights(control)
+			o.incomingUnixFDs(fds)
+			parseErr = errors.Join(parseErr, rightsErr)
+		}
+		err = errors.Join(err, parseErr)
+	}
 	if err != nil {
 		return n, err
 	}
@@ -50,8 +66,9 @@ func (o *oobReader) Read(b []byte) (n int, err error) {
 
 type unixTransport struct {
 	*net.UnixConn
-	rdr        *oobReader
-	hasUnixFDs bool
+	rdr             *oobReader
+	hasUnixFDs      bool
+	incomingUnixFDs func([]int)
 }
 
 func newUnixTransportFromConn(conn *net.UnixConn) transport {
@@ -102,7 +119,8 @@ func (t *unixTransport) ReadMessage() (*Message, error) {
 	// and gathers the out-of-band data in a buffer.
 	if t.rdr == nil {
 		t.rdr = &oobReader{
-			conn: t.UnixConn,
+			conn:            t.UnixConn,
+			incomingUnixFDs: t.incomingUnixFDs,
 			// This buffer is used to decode the part of the header that has a constant size.
 			csheader: make([]byte, 16),
 			b:        &bytes.Buffer{},
@@ -288,4 +306,8 @@ func (t *unixTransport) SendMessage(msg *Message) error {
 
 func (t *unixTransport) SupportsUnixFDs() bool {
 	return true
+}
+
+func (t *unixTransport) setIncomingUnixFDs(handler func([]int)) {
+	t.incomingUnixFDs = handler
 }
