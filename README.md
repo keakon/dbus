@@ -6,9 +6,14 @@ message is truncated, malformed, unreferenced, or arrives after cancellation,
 and wait for cleanup to finish after closing its private connection.
 
 Use `WithIncomingUnixFDs` before authentication. The handler owns every delivered
-descriptor; decoded message values are references, not additional owners. After
+descriptor, including on read errors; the transport never closes callback-owned
+descriptors. Decoded message values are references, not additional owners. After
 successful `Auth`, close the connection and wait on `ReadDone()` before collecting
 final cleanup results. Do not wait on `ReadDone()` from the receiver's callbacks.
+
+Without a callback, the transport closes received descriptors on failure and
+closes unreferenced descriptors on success. Only descriptors present in the
+returned message body transfer to the caller.
 
 The module path is `github.com/keakon/dbus/v5`. The protocol implementation and
 upstream license are retained; no Darwin-specific changes are included.
@@ -16,7 +21,7 @@ upstream license are retained; no Darwin-specific changes are included.
 Run the focused Linux regressions with:
 
 ```sh
-go test -run 'TestIncomingUnixFDsBeforeDecode|TestReadDoneWaitsForFDHandler' .
+go test -race -run 'Test(UnixTransportFD|UnixFDCallback|IncomingUnixFDs|ReadDone|DecodeUnixFD|DecodeMessageUnixFD)' .
 ```
 
 ---
